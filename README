@@ -4,12 +4,17 @@ NAME
 SYNOPSIS
         use File::Xcopy;
         my $fx = new File::Xcopy; 
-        $fx->xcopy("file1","file2", "action");
-        $fx->xcopy("from_dir", "to_dir", "action", "file_name_pattern");
+        $fx->from_dir("/from/dir");
+        $fx->to_dir("/to/dir");
+        $fx->fn_pat('(\.pl|\.txt)$');  # files with pl & txt extensions
+        $fx->param('s',1);             # search recursively to sub dirs
+        $fx->param('log_file','/my/log/file.log');
+        my ($sr, $rr) = $fx->get_stat; 
+        $fx->xcopy;                    # or
+        $fx->execute('copy'); 
 
         # the same with short name
-        $fx->xcp("file1","file2", "action");
-        $fx->xcp("from_dir", "to_dir", "action", "file_name_pattern");
+        $fx->xcp("from_dir", "to_dir", "file_name_pattern");
 
 DESCRIPTION
     The File::Xcopy module provides two basic functions, "xcopy" and
@@ -454,12 +459,22 @@ CODING HISTORY
         06/25/2004 (htu) - finished the core coding and passed first
         testing.
 
+    * Version 0.11
+        06/28/2004 (htu) - fixed the mistakes in documentation and populated
+        internal variables.
+
 FUTURE IMPLEMENTATION
     * add directory structure checking
         Check whether the from_dir and to_dir have the same directory tree.
 
     * add advanced parameters
         Ssearch file by a certain date, etc.
+
+    * add syncronize action
+        Make sure the files in from_dir and to_dir the same by copying new
+        files from from_dir to to_dir, update exisitng files in to_dir, and
+        move files that do not exist in from_dir out of to_dir to a temp
+        directory.
 
 AUTHOR
     Copyright (c) 2004 Hanming Tu. All rights reserved.

@@ -5,7 +5,7 @@ use strict;
 use vars qw($AUTOLOAD);
 use Carp;
 our(@ISA, @EXPORT, @EXPORT_OK, $VERSION, %EXPORT_TAGS);
-$VERSION = '0.10';
+$VERSION = '0.11';
 
 
 # require Exporter;
@@ -36,12 +36,17 @@ File::Xcopy - copy files after comparing them.
 
     use File::Xcopy;
     my $fx = new File::Xcopy; 
-    $fx->xcopy("file1","file2", "action");
-    $fx->xcopy("from_dir", "to_dir", "action", "file_name_pattern");
+    $fx->from_dir("/from/dir");
+    $fx->to_dir("/to/dir");
+    $fx->fn_pat('(\.pl|\.txt)$');  # files with pl & txt extensions
+    $fx->param('s',1);             # search recursively to sub dirs
+    $fx->param('log_file','/my/log/file.log');
+    my ($sr, $rr) = $fx->get_stat; 
+    $fx->xcopy;                    # or
+    $fx->execute('copy'); 
 
     # the same with short name
-    $fx->xcp("file1","file2", "action");
-    $fx->xcp("from_dir", "to_dir", "action", "file_name_pattern");
+    $fx->xcp("from_dir", "to_dir", "file_name_pattern");
 
 =head1 DESCRIPTION
 
@@ -257,9 +262,9 @@ sub xcopy {
     my $self = shift;
     my $class = ref($self)||$self;
     my($from,$to, $pat, $par) = @_;
+    $self->action('copy');
     my ($sr, $rr) = $self->get_stat(@_); 
-    $self->output($sr,$rr,"",$par); 
-    return $self->execute('copy'); 
+    return $self->execute; 
 }
 
 =head3 xmove($from, $to, $pat, $par)
@@ -297,9 +302,9 @@ sub xmove {
     my $self = shift;
     my $class = ref($self)||$self;
     my($from,$to, $pat, $par) = @_;
+    $self->action('move');
     my ($sr, $rr) = $self->get_stat(@_); 
-    $self->output($sr,$rr, "", $par); 
-    return $self->execute('move'); 
+    return $self->execute; 
 };
 
 *xcp = \&xcopy;
@@ -346,9 +351,13 @@ Return: ($n, $m).
 sub execute {
     my $self = shift;
     my ($act) = @_; 
-    $act = 'test' if ! $act; 
+    $act = $self->action  if ! $act;
+    $act = 'test'         if ! $act; 
+    my $sr = $self->param('stat_ar');
     my $rr = $self->param('file_ar');
     croak "ERR: please run get_stat first.\n" if ! $rr; 
+    $self->action($act);
+    my $par = $self->param; 
     my ($n, $m, $tp, $f1, $f2) = (0,0,"","","");
     foreach my $f (sort keys %{$rr}) {
         ++$m; 
@@ -374,6 +383,7 @@ sub execute {
             carp "WARN: $f - do not know what to do.\n";
         } 
     }
+    $self->output($sr,$rr,"",$par); 
     return ($n ,$m);
 }
 
@@ -525,6 +535,9 @@ sub get_stat {
     croak "ERR: target dir not specified.\n"         if ! $to; 
     croak "ERR: could not find src dir - $from.\n"   if ! -d $from;
     croak "ERR: could not find tgt dir - $to.\n"     if ! -d $to  ;
+    $self->from_dir($from);
+    $self->to_dir($to);
+    $self->fn_pat($pat);
     my ($re, $n, $m, $t);
     if ($pat) { $re = qr {$pat}; } else { $re = qr {.+}; } 
     # $$re = qr {^lib_df51t5.*(\.pl|\.txt)$};
@@ -1087,6 +1100,11 @@ __END__
 
 06/25/2004 (htu) - finished the core coding and passed first testing.
 
+=item * Version 0.11
+
+06/28/2004 (htu) - fixed the mistakes in documentation and populated
+internal variables.
+
 =back
 
 =head1 FUTURE IMPLEMENTATION
@@ -1100,6 +1118,13 @@ Check whether the from_dir and to_dir have the same directory tree.
 =item * add advanced parameters 
 
 Ssearch file by a certain date, etc.
+
+=item * add syncronize action 
+
+Make sure the files in from_dir and to_dir the same by copying new 
+files from from_dir to to_dir, update exisitng files in to_dir, and
+move files that do not exist in from_dir out of to_dir to a 
+temp directory. 
 
 =back
 
