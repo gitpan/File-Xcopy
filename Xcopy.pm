@@ -5,14 +5,14 @@ use strict;
 use vars qw($AUTOLOAD);
 use Carp;
 our(@ISA, @EXPORT, @EXPORT_OK, $VERSION, %EXPORT_TAGS);
-$VERSION = '0.11';
+$VERSION = '0.12';
 
 
 # require Exporter;
 # @ISA = qw(Exporter);
 @EXPORT = qw();
 @EXPORT_OK = qw(xcp xmv xcopy xmove find_files list_files output
-    fmtTime format_number get_stat file_stat execute 
+    fmtTime format_number get_stat file_stat execute syscopy
 );
 %EXPORT_TAGS = ( 
   all => [@EXPORT_OK] 
@@ -20,13 +20,15 @@ $VERSION = '0.11';
 
 use File::Find; 
 use IO::File;
-use File::Copy; 
+use File::Basename;
+
 # use Fax::DataFax::Subs qw(:echo_msg disp_param);
 
 sub xcopy;
 sub xmove;
 sub xcp;
 sub xmv;
+sub syscopy;
 
 =head1 NAME
 
@@ -40,6 +42,7 @@ File::Xcopy - copy files after comparing them.
     $fx->to_dir("/to/dir");
     $fx->fn_pat('(\.pl|\.txt)$');  # files with pl & txt extensions
     $fx->param('s',1);             # search recursively to sub dirs
+    $fx->param('verbose',1);       # search recursively to sub dirs
     $fx->param('log_file','/my/log/file.log');
     my ($sr, $rr) = $fx->get_stat; 
     $fx->xcopy;                    # or
@@ -267,6 +270,73 @@ sub xcopy {
     return $self->execute; 
 }
 
+=head3 syscopy($from, $to)
+
+Input variables:
+
+  $from - a source file or directory 
+  $to   - a target directory or file name 
+
+Variables used or routines called: 
+
+
+How to use:
+
+  use File::Xcopy;
+  syscopy('/src/file_a', '/tgt/dir/file_b');  # copy to a file
+  syscopy('/src/file_a', '/tgt/dir');         # copy to a dir
+  syscopy('/src/dir_a', '/tgt/dir_b');        # copy a dir to a dir
+
+Return: none 
+
+=cut
+
+sub syscopy {
+    my $self = shift;
+    my $class = ref($self)||$self;
+    my ($from, $to) = @_;
+    
+    my @arg = ();
+    $arg[0] = '/bin/cp';
+    if ($^O eq 'VMS') {
+        return &rmscopy(@_);
+    } elsif ($^O eq 'MacOS') {
+        return &maccopy(@_);
+    } elsif ($^O eq 'MSWin32') {
+        $arg[0] = 'copy';
+        $from =~ s{/}{\\}g;
+        $to   =~ s{/}{\\}g;
+        push @arg, "\"$from\"", "\"$to\"";
+    } else {
+        push @arg, '-p', '-f', $from, $to;
+    } 
+    # print "ARG: @arg\n";
+    my $rcode = system(@arg);
+    # MSWin32 returns 256: $rcode>>8 = 1
+    # Unix returns 0: 
+    my $r = "";
+    if ($^O eq 'MSWin32') {
+        $r = $rcode>>8;
+    } else {
+        $r = ($rcode==0)?1:0;
+    }
+    return $r;
+}
+
+sub maccopy {
+    require Mac::MoreFiles;
+    my($from, $to) = @_;
+    my($dir, $toname);
+    return 0 unless -e $from;
+    if ($to =~ /(.*:)([^:]+):?$/) {
+        ($dir, $toname) = ($1, $2);
+    } else {
+        ($dir, $toname) = (":", $to);
+    }
+    unlink($to);
+    return Mac::MoreFiles::FSpFileCopy($from, $dir, $toname, 1);
+}
+
 =head3 xmove($from, $to, $pat, $par)
 
 Input variables:
@@ -358,27 +428,74 @@ sub execute {
     croak "ERR: please run get_stat first.\n" if ! $rr; 
     $self->action($act);
     my $par = $self->param; 
+    my $vbm = ${$par}{verbose}; 
+    my $fdir = $self->from_dir;
+    my $tdir = $self->to_dir;
     my ($n, $m, $tp, $f1, $f2) = (0,0,"","","");
+    my $tm_bit = 1;
     foreach my $f (sort keys %{$rr}) {
         ++$m; 
         $tp = ${$rr}{$f}{type};
         # skip if the file only exists in to_dir
         next if ($tp =~ /^OLD/); 
-        $f1 = "${$rr}{$f}{f_pdir}/$f"; 
-        $f1 = "${$rr}{$f}{t_pdir}/$f"; 
+        my $f3 = $f; $f3 =~ s{^\.\/}{};
+        $f1 = join '/', $fdir, $f3; 
+        $f2 = join '/', $tdir, $f3; 
+        next if -d $f1;       # skip the sub-dirs
+        if (! -f $f1) {
+           carp "WARN: 1 - could not find $f1\n";
+           next;
+        }
+        my $td2 = dirname($f2);
+        if (!-d $td2) {
+            # we need to get original mask and imply here
+            mkdir $td2;
+        }
         if ($act =~ /^c/i) {            # copy
-            ++$n;
-            copy $f1, $f2   if $tp =~ /^(NEW|EX1|EX2)/; 
+            if ($tp =~ /^(NEW|EX1|EX2)/) { 
+                if ($self->syscopy($f1, $f2)) {
+                    ++$n; 
+                    print "$f1 copied to $f2\n" if $vbm; 
+                } else { 
+                  carp "ERR: could not copy $f1: $!\n"; 
+                }
+            } else {
+                print "copying $f1 to $f2: skipped.\n" if $vbm; 
+            }
         } elsif ($act =~ /^m/i) {       # move
-            ++$n;
-            copy $f1, $f2   if $tp =~ /^(NEW|EX1|EX2)/; 
-            move $f1; 
+            if ($tp =~ /^(NEW|EX1|EX2)/) { 
+                if ($self->syscopy($f1, $f2)) {
+                    ++$n; 
+                    unlink $f1; 
+                    print "$f1 moved to $f2\n" if $vbm; 
+                } else {
+                  carp "ERR: could not move $f1: $!\n"; 
+                }
+            } else { 
+                print "moving $f1 to $f2: skipped.\n" if $vbm; 
+            }
         } elsif ($act =~ /^u/i) {       # update
-            ++$n;
-            copy $f1, $f2   if $tp =~ /^(EX1|EX2)/; 
+            if ($tp =~ /^(EX1|EX2)/) { 
+                if ($self->syscopy($f1, $f2)) {
+                    ++$n; 
+                    print "$f1 updated to $f2\n" if $vbm; 
+                } else {
+                  carp "ERR: could not update $f2: $!\n"; 
+                }
+            } else {
+                print "updating $f1 to $f2: skipped.\n" if $vbm; 
+            }
         } elsif ($act =~ /^o/i) {       # overwirte
-            ++$n;
-            copy $f1, $f2   if $tp =~ /^(EX0|EX1|EX2)/; 
+            if ($tp =~ /^(EX0|EX1|EX2)/) { 
+                if ($self->syscopy($f1, $f2)) {
+                    ++$n; 
+                    print "$f1 overwritten $f2\n" if $vbm; 
+                } else {
+                  carp "ERR: could not overwrite $f2: $!\n"; 
+                }
+            } else {
+                print "overwriting $f1 to $f2: skipped.\n" if $vbm; 
+            }
         } else {
             carp "WARN: $f - do not know what to do.\n";
         } 
@@ -398,6 +515,33 @@ Input variables:
   $par - parameter array
     log_file - log file name with full path
     
+
+I currently only implemented /S paramter. Here is an example on how to
+use the module:
+
+  package main;
+  my $self = bless {}, "main";
+
+  use File::Xcopy;
+  use Debug::EchoMessage;
+
+  my $xcp = File::Xcopy->new;
+  my $fm  = '/opt/from/dir';
+  my $to  = '/opt/to/dir';
+  my %p = (s=>1);   # or $xcp->param('s',1);
+  my ($a, $b) = $xcp->get_stat($fm, $to, '\.sql$', \%p);
+  # $self->disp_param($a);
+  # $self->disp_param($b);
+  $xcp->output($a,$b);
+
+  $xcp->param('verbose',1);
+  my ($n, $m) = $xcp->execute('cp');
+  # $self->disp_param($xcp->param());
+
+  print "Total number of files matched: $m\n";
+  print "Number of files copied: $n\n";
+
+I will implement the following parameters gradually:
 
   source       Specifies the file(s) to copy.
   destination  Specifies the location and/or name of new files.
@@ -481,8 +625,8 @@ Return: ($sr, $rr).
         txt - "Different size or time"
         cnt - count of files
         szt - total bytes of all files in the category
-      OLD{txt|cnt|szt} - "File does not exist in TO folder"
-      NEW{txt|cnt|szt} - "File does not exist in FROM folder"
+      OLD{txt|cnt|szt} - "File does not exist in FROM folder"
+      NEW{txt|cnt|szt} - "File does not exist in TO folder"
       EX0{txt|cnt|szt} - "File is older or the same"
       EX1{txt|cnt|szt} - "File is newer and its size bigger"
       EX2{txt|cnt|szt} - "File is newer and its size smaller"
@@ -557,8 +701,8 @@ sub get_stat {
     my %r = ();
     my %s = ( OK=>{txt=>"The Same size and time"},
               NO=>{txt=>"Different size or time"},
-              OLD=>{txt=>"File does not exist in TO folder"},
-              NEW=>{txt=>"File does not exist in FROM folder"},
+              OLD=>{txt=>"File does not exist in FROM folder"},
+              NEW=>{txt=>"File does not exist in TO folder"},
               EX0=>{txt=>"File is older or the same"},
               EX1=>{txt=>"File is newer and its size bigger"},
               EX2=>{txt=>"File is newer and its size smaller"},
@@ -580,7 +724,7 @@ sub get_stat {
         if (! exists ${$thr}{$f}) {
             ++$s{NEW}{cnt};
             $s{NEW}{szt} += ${$fhr}{$f}{size}; 
-            $r{$f}{t_pdir}=""; $r{$f}{t_size}="";      
+            $r{$f}{t_pdir}=$to; $r{$f}{t_size}="";      
             $r{$f}{t_time}=""; $r{$f}{tmdiff}="";
             $r{$f}{szdiff}=""; 
             $r{$f}{action}="CP";
@@ -590,8 +734,8 @@ sub get_stat {
         $r{$f}{t_pdir}=${$thr}{$f}{pdir}; 
         $r{$f}{t_size}=${$thr}{$f}{size}; 
         $r{$f}{t_time}=$self->fmtTime(${$thr}{$f}{time});
-        $r{$f}{tmdiff}=${$fhr}{$f}{time}-${$thr}{$f}{time};
-        $r{$f}{szdiff}=${$fhr}{$f}{size}-${$thr}{$f}{size};
+        $r{$f}{tmdiff}=${$thr}{$f}{time}-${$fhr}{$f}{time};
+        $r{$f}{szdiff}=${$thr}{$f}{size}-${$fhr}{$f}{size};
         if (${$fhr}{$f}{size} == ${$thr}{$f}{size} && 
             ${$fhr}{$f}{time} == ${$thr}{$f}{time} ) {
             ++$s{OK}{cnt};
@@ -721,6 +865,7 @@ sub output {
     $t .= "    count:    pct: total size\n";
     my $n = ${$sr}{NEW}{cnt}+${$sr}{EX0}{cnt}+${$sr}{EX1}{cnt}
             +${$sr}{EX2}{cnt} +${$sr}{OLD}{cnt}; 
+       $n = ($n)?$n:1;
     my $m = ${$sr}{NEW}{szt}+${$sr}{EX0}{szt}+${$sr}{EX1}{szt}
             +${$sr}{EX2}{szt} +${$sr}{OLD}{szt}; 
     $t .= sprintf $fmt, ${$sr}{OK}{txt}, ${$sr}{OK}{cnt},
@@ -1104,6 +1249,16 @@ __END__
 
 06/28/2004 (htu) - fixed the mistakes in documentation and populated
 internal variables.
+
+=item * Version 0.12
+
+12/15/2004 (htu) - fixed a bug in the execute method. 
+
+12/26/2004 (htu) - added syscopy method to replace methods in 
+File::Copy module. The copy method in File::Copy does not reserve the 
+attributes of a file.
+
+12/29/2004 (htu) - tested on Solaris and Win32 operating systems
 
 =back
 

@@ -2,5 +2,5 @@ Xcopy.pm
 test.pl
 Makefile.PL
 ./t/Xcopy.t
-File-Xcopy-0.11.readme
+File-Xcopy-0.12.readme
 README

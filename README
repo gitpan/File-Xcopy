@@ -8,6 +8,7 @@ SYNOPSIS
         $fx->to_dir("/to/dir");
         $fx->fn_pat('(\.pl|\.txt)$');  # files with pl & txt extensions
         $fx->param('s',1);             # search recursively to sub dirs
+        $fx->param('verbose',1);       # search recursively to sub dirs
         $fx->param('log_file','/my/log/file.log');
         my ($sr, $rr) = $fx->get_stat; 
         $fx->xcopy;                    # or
@@ -69,6 +70,24 @@ DESCRIPTION
 
       $n - number of files copied or moved. 
       $m - total number of files matched
+
+   syscopy($from, $to)
+
+    Input variables:
+
+      $from - a source file or directory 
+      $to   - a target directory or file name 
+
+    Variables used or routines called:
+
+    How to use:
+
+      use File::Xcopy;
+      syscopy('/src/file_a', '/tgt/dir/file_b');  # copy to a file
+      syscopy('/src/file_a', '/tgt/dir');         # copy to a dir
+      syscopy('/src/dir_a', '/tgt/dir_b');        # copy a dir to a dir
+
+    Return: none
 
    xmove($from, $to, $pat, $par)
 
@@ -144,6 +163,33 @@ DESCRIPTION
       $par - parameter array
         log_file - log file name with full path
     
+    I currently only implemented /S paramter. Here is an example on how to
+    use the module:
+
+      package main;
+      my $self = bless {}, "main";
+
+      use File::Xcopy;
+      use Debug::EchoMessage;
+
+      my $xcp = File::Xcopy->new;
+      my $fm  = '/opt/from/dir';
+      my $to  = '/opt/to/dir';
+      my %p = (s=>1);   # or $xcp->param('s',1);
+      my ($a, $b) = $xcp->get_stat($fm, $to, '\.sql$', \%p);
+      # $self->disp_param($a);
+      # $self->disp_param($b);
+      $xcp->output($a,$b);
+
+      $xcp->param('verbose',1);
+      my ($n, $m) = $xcp->execute('cp');
+      # $self->disp_param($xcp->param());
+
+      print "Total number of files matched: $m\n";
+      print "Number of files copied: $n\n";
+
+    I will implement the following parameters gradually:
+
       source       Specifies the file(s) to copy.
       destination  Specifies the location and/or name of new files.
       /A           Copies only files with the archive attribute set,
@@ -225,8 +271,8 @@ DESCRIPTION
             txt - "Different size or time"
             cnt - count of files
             szt - total bytes of all files in the category
-          OLD{txt|cnt|szt} - "File does not exist in TO folder"
-          NEW{txt|cnt|szt} - "File does not exist in FROM folder"
+          OLD{txt|cnt|szt} - "File does not exist in FROM folder"
+          NEW{txt|cnt|szt} - "File does not exist in TO folder"
           EX0{txt|cnt|szt} - "File is older or the same"
           EX1{txt|cnt|szt} - "File is newer and its size bigger"
           EX2{txt|cnt|szt} - "File is newer and its size smaller"
@@ -462,6 +508,15 @@ CODING HISTORY
     * Version 0.11
         06/28/2004 (htu) - fixed the mistakes in documentation and populated
         internal variables.
+
+    * Version 0.12
+        12/15/2004 (htu) - fixed a bug in the execute method.
+
+        12/26/2004 (htu) - added syscopy method to replace methods in
+        File::Copy module. The copy method in File::Copy does not reserve
+        the attributes of a file.
+
+        12/29/2004 (htu) - tested on Solaris and Win32 operating systems
 
 FUTURE IMPLEMENTATION
     * add directory structure checking
