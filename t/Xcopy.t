@@ -20,12 +20,4 @@ foreach my $m (@md) {
     ok($obj->can($m), "$class->can('$m')");
 }
 
-my $d1 = '/opt/orasw/dba/cgi/subprgs';
-my $d2 = '/opt/orasw/dba/cgi/subprgs/baks'; 
-$obj->from_dir($d1);
-$obj->to_dir($d2); 
-$obj->action('test');
-$obj->fn_pat('^lib_df51t5.*(\.pl|\.txt)$');
-$obj->param('s',0);    # recursive 
-$obj->xcopy;
 

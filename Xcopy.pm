@@ -5,19 +5,23 @@ use strict;
 use vars qw($AUTOLOAD);
 use Carp;
 our(@ISA, @EXPORT, @EXPORT_OK, $VERSION, %EXPORT_TAGS);
-$VERSION = '0.06';
+$VERSION = '0.10';
 
 
 # require Exporter;
 # @ISA = qw(Exporter);
 @EXPORT = qw();
-@EXPORT_OK = qw(xcp xmv xcopy xmove find_files list_files);
+@EXPORT_OK = qw(xcp xmv xcopy xmove find_files list_files output
+    fmtTime format_number get_stat file_stat execute 
+);
 %EXPORT_TAGS = ( 
   all => [@EXPORT_OK] 
 );
 
 use File::Find; 
-use Fax::DataFax::Subs qw(:echo_msg disp_param);
+use IO::File;
+use File::Copy; 
+# use Fax::DataFax::Subs qw(:echo_msg disp_param);
 
 sub xcopy;
 sub xmove;
@@ -30,15 +34,14 @@ File::Xcopy - copy files after comparing them.
 
 =head1 SYNOPSIS
 
-  	use File::Xcopy;
+    use File::Xcopy;
+    my $fx = new File::Xcopy; 
+    $fx->xcopy("file1","file2", "action");
+    $fx->xcopy("from_dir", "to_dir", "action", "file_name_pattern");
 
-	xcopy("file1","file2", "action");
-  	xcopy("from_dir", "to_dir", "action", "file_name_pattern");
-
-	xcp("file1","file2", "action");
-  	xcp("from_dir", "to_dir", "action", "file_name_pattern");
-
-	my $xcp = File::Xcopy->new(log_file=>"file_name");
+    # the same with short name
+    $fx->xcp("file1","file2", "action");
+    $fx->xcp("from_dir", "to_dir", "action", "file_name_pattern");
 
 =head1 DESCRIPTION
 
@@ -216,27 +219,171 @@ sub DESTROY {
 }
 
 
-=head3 xcopy($from, $to, $act, $pat, $par)
+=head3 xcopy($from, $to, $pat, $par)
 
 Input variables:
 
   $from - a source file or directory 
   $to   - a target directory or file name 
+  $pat - file name match pattern, default to {.+}
+  $par - parameter array
+    log_file - log file name with full path
+    
+
+Variables used or routines called: 
+
+  get_stat - get file stats
+  output   - output the stats
+  execute  - execute a action
+
+How to use:
+
+  use File::Xcopy;
+  my $obj = File::Xcopy->new;
+  # copy all the files with .txt extension if they exists in /tgt/dir
+  $obj->xcopy('/src/files', '/tgt/dir', '\.txt$'); 
+
+  use File:Xcopy qw(xcopy); 
+  xcopy('/src/files', '/tgt/dir', '\.txt$'); 
+
+Return: ($n, $m). 
+
+  $n - number of files copied or moved. 
+  $m - total number of files matched
+
+=cut
+
+sub xcopy {
+    my $self = shift;
+    my $class = ref($self)||$self;
+    my($from,$to, $pat, $par) = @_;
+    my ($sr, $rr) = $self->get_stat(@_); 
+    $self->output($sr,$rr,"",$par); 
+    return $self->execute('copy'); 
+}
+
+=head3 xmove($from, $to, $pat, $par)
+
+Input variables:
+
+  $from - a source file or directory 
+  $to   - a target directory or file name 
+  $pat - file name match pattern, default to {.+}
+  $par - parameter array
+    log_file - log file name with full path
+    
+
+Variables used or routines called: 
+
+  get_stat - get file stats
+  output   - output the stats
+  execute  - execute a action
+
+How to use:
+
+  use File::Xcopy;
+  my $obj = File::Xcopy->new;
+  # move the files with .txt extension if they exists in /tgt/dir
+  $obj->xmove('/src/files', '/tgt/dir', '\.txt$'); 
+
+Return: ($n, $m). 
+
+  $n - number of files copied or moved. 
+  $m - total number of files matched
+
+=cut
+
+sub xmove {
+    my $self = shift;
+    my $class = ref($self)||$self;
+    my($from,$to, $pat, $par) = @_;
+    my ($sr, $rr) = $self->get_stat(@_); 
+    $self->output($sr,$rr, "", $par); 
+    return $self->execute('move'); 
+};
+
+*xcp = \&xcopy;
+*xmv = \&xmove;
+
+=head3 execute ($act)
+
+Input variables:
+
   $act  - action: 
        report|test - test run
        copy|CP - copy files from source to target only if
                  1) the files do not exist or 
                  2) newer than the existing ones
                  This is default.
-  overwrite|OW - copy files from source to target even if
-                 the files exist and newer than the source files 
+  overwrite|OW - copy files from source to target only if
+                 1) the files exist and 
+                 2) no matter is older or newer 
        move|MV - same as in copy except it removes from source the  
                  following files: 
                  1) files are exactly the same (size and time stamp)
                  2) files are copied successfully
      update|UD - copy files only if
                  1) the file exists in the target and
-                 2) different from the source in size and time stamp.
+                 2) newer in time stamp 
+
+Variables used or routines called: None
+
+How to use:
+
+  use File::Xcopy;
+  my $obj = File::Xcopy->new;
+  # update all the files with .txt extension if they exists in /tgt/dir
+  $obj->get_stat('/src/files', '/tgt/dir', '\.txt$'); 
+  my ($n, $m) = $obj->execute('overwrite'); 
+
+Return: ($n, $m). 
+
+  $n - number of files copied or moved. 
+  $m - total number of files matched
+
+=cut
+
+sub execute {
+    my $self = shift;
+    my ($act) = @_; 
+    $act = 'test' if ! $act; 
+    my $rr = $self->param('file_ar');
+    croak "ERR: please run get_stat first.\n" if ! $rr; 
+    my ($n, $m, $tp, $f1, $f2) = (0,0,"","","");
+    foreach my $f (sort keys %{$rr}) {
+        ++$m; 
+        $tp = ${$rr}{$f}{type};
+        # skip if the file only exists in to_dir
+        next if ($tp =~ /^OLD/); 
+        $f1 = "${$rr}{$f}{f_pdir}/$f"; 
+        $f1 = "${$rr}{$f}{t_pdir}/$f"; 
+        if ($act =~ /^c/i) {            # copy
+            ++$n;
+            copy $f1, $f2   if $tp =~ /^(NEW|EX1|EX2)/; 
+        } elsif ($act =~ /^m/i) {       # move
+            ++$n;
+            copy $f1, $f2   if $tp =~ /^(NEW|EX1|EX2)/; 
+            move $f1; 
+        } elsif ($act =~ /^u/i) {       # update
+            ++$n;
+            copy $f1, $f2   if $tp =~ /^(EX1|EX2)/; 
+        } elsif ($act =~ /^o/i) {       # overwirte
+            ++$n;
+            copy $f1, $f2   if $tp =~ /^(EX0|EX1|EX2)/; 
+        } else {
+            carp "WARN: $f - do not know what to do.\n";
+        } 
+    }
+    return ($n ,$m);
+}
+
+
+=head3 get_stat($from, $to, $pat, $par)
+
+Input variables:
+
+  $from - a source file or directory 
+  $to   - a target directory or file name 
   $pat - file name match pattern, default to {.+}
   $par - parameter array
     log_file - log file name with full path
@@ -252,31 +399,35 @@ Input variables:
                If no date is given, copies only those files whose
                source time is newer than the destination time.
   /EXCLUDE:file1[+file2][+file3]...
-               Specifies a list of files containing strings.  When any of the
-               strings match any part of the absolute path of the file to be
-               copied, that file will be excluded from being copied.  For
-               example, specifying a string like \obj\ or .obj will exclude
-               all files underneath the directory obj or all files with the
+               Specifies a list of files containing strings.  
+               When any of the strings match any part of the absolute 
+               path of the file to be copied, that file will be 
+               excluded from being copied.  For example, specifying a 
+               string like \obj\ or .obj will exclude all files 
+               underneath the directory obj or all files with the
                .obj extension respectively.
   /P           Prompts you before creating each destination file.
   /S           Copies directories and subdirectories except empty ones.
-  /E           Copies directories and subdirectories, including empty ones.
-               Same as /S /E. May be used to modify /T.
+  /E           Copies directories and subdirectories, including empty 
+               ones.  Same as /S /E. May be used to modify /T.
   /V           Verifies each new file.
   /W           Prompts you to press a key before copying.
   /C           Continues copying even if errors occur.
-  /I           If destination does not exist and copying more than one file,
+  /I           If destination does not exist and copying more than one 
+               file,
                assumes that destination must be a directory.
   /Q           Does not display file names while copying.
-  /F           Displays full source and destination file names while copying.
+  /F           Displays full source and destination file names while 
+               copying.
   /L           Displays files that would be copied.
   /H           Copies hidden and system files also.
   /R           Overwrites read-only files.
-  /T           Creates directory structure, but does not copy files. Does not
-               include empty directories or subdirectories. /T /E includes
-               empty directories and subdirectories.
+  /T           Creates directory structure, but does not copy files. 
+               Does not include empty directories or subdirectories. 
+               /T /E includes empty directories and subdirectories.
   /U           Copies only files that already exist in destination.
-  /K           Copies attributes. Normal Xcopy will reset read-only attributes.
+  /K           Copies attributes. Normal Xcopy will reset read-only 
+               attributes.
   /N           Copies using the generated short names.
   /O           Copies file ownership and ACL information.
   /X           Copies file audit settings (implies /O).
@@ -286,39 +437,94 @@ Input variables:
                existing destination file.
   /Z           Copies networked files in restartable mode.
 
-Variables used or routines called: None.
+Variables used or routines called: 
+
+  from_dir   - get from_dir
+  to_dir     - get to_dir
+  fn_pat     - get file name pattern
+  param      - get parameters
+  find_files - get a list of files from a dir and its sub dirs
+  list_files - get a list of files from a dir
+  file_stat  - get file stats
+  fmtTime    - format time
+
 
 How to use:
 
   use File::Xcopy;
   my $obj = File::Xcopy->new;
-  # update all the files with .txt extension if they exists in /tgt/dir
-  $obj->xcopy('/src/files', '/tgt/dir', 'OW', '\.txt$'); 
+  # get stat for all the files with .txt extension 
+  # if they exists in /tgt/dir
+  $obj->get_stat('/src/files', '/tgt/dir', '\.txt$'); 
 
   use File:Xcopy qw(xcopy); 
   xcopy('/src/files', '/tgt/dir', 'OW', '\.txt$'); 
 
-Return: ($n, $m). 
+Return: ($sr, $rr). 
 
-  $n - number of files copied or moved. 
-  $m - total number of files matched
+  $sr - statistic hash array ref with the following keys: 
+      OK    - the files are the same in size and time stamp
+        txt - "The Same size and time"
+        cnt - count of files
+        szt - total bytes of all files in the category
+      NO    - the files are different either in size or time
+        txt - "Different size or time"
+        cnt - count of files
+        szt - total bytes of all files in the category
+      OLD{txt|cnt|szt} - "File does not exist in TO folder"
+      NEW{txt|cnt|szt} - "File does not exist in FROM folder"
+      EX0{txt|cnt|szt} - "File is older or the same"
+      EX1{txt|cnt|szt} - "File is newer and its size bigger"
+      EX2{txt|cnt|szt} - "File is newer and its size smaller"
+      STAT
+        max_size - largest  file in all the selected files
+        min_size - smallest file in all the selected files.
+        max_time - time stamp of the most recent file
+        min_time - time stamp of the oldest file 
+
+The sum of {OK} and {NO} is equal to the sum of {EX0}, {EX1} and
+{EX2}. 
+
+  $rr - result hash array ref with the following keys {$f}{$itm}:
+      {$f} - file name relative to from_dir or to_dir
+         file - file name without dir parts
+         pdir - parent directory
+         prop - file stat array
+         rdir - relative file name to the $dir
+         path - full path of the file
+         type - file status: NEW, OLD, EX1, or EX2
+         f_pdir - parent dir for from_dir
+         f_size - file size in bytes from from_dir
+         f_time - file time stamp    from from_dir
+         t_pdir - parent dir for to_dir
+         t_size - file size in bytes from to_dir 
+         t_time - file time stamp    from to_dir 
+         tmdiff - time difference in seconds between the file 
+                  in from_dir and to_dir
+         szdiff - size difference in bytes between the file 
+                  in from_dir and to_dir
+         action - suggested action: CP, OW, SK
+
+The method also sets the two parameters: stat_ar, file_ar and you can 
+get it using this method: 
+
+    my $sr = $self->param('stat_ar');
+    my $rr = $self->param('file_ar');
 
 =cut
 
-sub xcopy {
+sub get_stat {
     my $self = shift;
     my $class = ref($self)||$self;
-    my($from,$to, $act, $pat, $par) = @_;
+    my($from,$to, $pat, $par) = @_;
     $from = $self->from_dir if ! $from; 
     $to   = $self->to_dir   if ! $to; 
-    $act  = $self->action   if ! $act; 
     $pat  = $self->fn_pat   if ! $pat; 
     $par  = $self->param    if ! $par; 
     croak "ERR: source dir or file not specified.\n" if ! $from; 
     croak "ERR: target dir not specified.\n"         if ! $to; 
     croak "ERR: could not find src dir - $from.\n"   if ! -d $from;
     croak "ERR: could not find tgt dir - $to.\n"     if ! -d $to  ;
-    $act = 'copy' if !$act; 
     my ($re, $n, $m, $t);
     if ($pat) { $re = qr {$pat}; } else { $re = qr {.+}; } 
     # $$re = qr {^lib_df51t5.*(\.pl|\.txt)$};
@@ -335,21 +541,289 @@ sub xcopy {
     # convert array into hash 
     my $fhr = $self->file_stat($from, $far);
     my $thr = $self->file_stat($to,   $tar); 
-
-    $self->disp_param($fhr); 
-    $self->disp_param($thr); 
-
+    my %r = ();
+    my %s = ( OK=>{txt=>"The Same size and time"},
+              NO=>{txt=>"Different size or time"},
+              OLD=>{txt=>"File does not exist in TO folder"},
+              NEW=>{txt=>"File does not exist in FROM folder"},
+              EX0=>{txt=>"File is older or the same"},
+              EX1=>{txt=>"File is newer and its size bigger"},
+              EX2=>{txt=>"File is newer and its size smaller"},
+              STAT=>{max_size=>0, min_size=>99999999999, 
+                     max_time=>0, min_time=>99999999999},
+    );
     foreach my $f (keys %{$fhr}) {
-
+        $s{STAT}{max_size} = ($s{STAT}{max_size}<${$fhr}{$f}{size}) ?
+            ${$fhr}{$f}{size} : $s{STAT}{max_size}; 
+        $s{STAT}{min_size} = ($s{STAT}{min_size}>${$fhr}{$f}{size}) ?
+            ${$fhr}{$f}{size} : $s{STAT}{min_size}; 
+        $s{STAT}{max_time} = ($s{STAT}{max_time}<${$fhr}{$f}{time}) ?
+            ${$fhr}{$f}{time} : $s{STAT}{max_time}; 
+        $s{STAT}{min_time} = ($s{STAT}{min_time}>${$fhr}{$f}{time}) ?
+            ${$fhr}{$f}{time} : $s{STAT}{min_time}; 
+        $r{$f} = {file=>${$fhr}{$f}{file},  f_pdir=>${$fhr}{$f}{pdir}, 
+            f_size=>${$fhr}{$f}{size},
+            f_time=>$self->fmtTime(${$fhr}{$f}{time})}; 
+        if (! exists ${$thr}{$f}) {
+            ++$s{NEW}{cnt};
+            $s{NEW}{szt} += ${$fhr}{$f}{size}; 
+            $r{$f}{t_pdir}=""; $r{$f}{t_size}="";      
+            $r{$f}{t_time}=""; $r{$f}{tmdiff}="";
+            $r{$f}{szdiff}=""; 
+            $r{$f}{action}="CP";
+            $r{$f}{type}  = 'NEW'; 
+            next; 
+        }
+        $r{$f}{t_pdir}=${$thr}{$f}{pdir}; 
+        $r{$f}{t_size}=${$thr}{$f}{size}; 
+        $r{$f}{t_time}=$self->fmtTime(${$thr}{$f}{time});
+        $r{$f}{tmdiff}=${$fhr}{$f}{time}-${$thr}{$f}{time};
+        $r{$f}{szdiff}=${$fhr}{$f}{size}-${$thr}{$f}{size};
+        if (${$fhr}{$f}{size} == ${$thr}{$f}{size} && 
+            ${$fhr}{$f}{time} == ${$thr}{$f}{time} ) {
+            ++$s{OK}{cnt};
+            $s{OK}{szt} += ${$fhr}{$f}{size}; 
+            $r{$f}{action}="no action";
+            $r{$f}{type}  = 'OK'; 
+            next;
+        }
+        $s{NO}{szt}  += ${$fhr}{$f}{size}; 
+        $r{$f}{type}  = 'NO'; 
+        ++$s{NO}{cnt};
+        if (${$fhr}{$f}{time}>${$thr}{$f}{time}) {
+            if (${$fhr}{$f}{time}>${$thr}{$f}{time}) {
+                ++$s{EX1}{cnt};
+                $s{EX1}{szt} += ${$fhr}{$f}{size}; 
+                $r{$f}{type}  = 'EX1'; 
+            } else {
+                ++$s{EX2}{cnt};
+                $s{EX2}{szt} += ${$fhr}{$f}{size}; 
+                $r{$f}{type}  = 'EX2'; 
+            }
+            $r{$f}{action}="OW";
+        } else {
+            $r{$f}{action}="SK";
+            ++$s{EX0}{cnt};
+            $s{EX0}{szt} += ${$fhr}{$f}{size}; 
+            $r{$f}{type}  = 'EX0'; 
+        }
     }
-    return ($n, $m); 
+    foreach my $f (keys %{$thr}) {
+        $s{STAT}{max_size} = ($s{STAT}{max_size}<${$thr}{$f}{size}) ?
+            ${$thr}{$f}{size} : $s{STAT}{max_size}; 
+        $s{STAT}{min_size} = ($s{STAT}{min_size}>${$thr}{$f}{size}) ?
+            ${$thr}{$f}{size} : $s{STAT}{min_size}; 
+        $s{STAT}{max_time} = ($s{STAT}{max_time}<${$thr}{$f}{time}) ?
+            ${$thr}{$f}{time} : $s{STAT}{max_time}; 
+        $s{STAT}{min_time} = ($s{STAT}{min_time}>${$thr}{$f}{time}) ?
+            ${$thr}{$f}{time} : $s{STAT}{min_time}; 
+        next if (exists ${$fhr}{$f}); 
+        ++$s{OLD}{cnt};
+        $s{OLD}{szt} += ${$thr}{$f}{size}; 
+        $r{$f} = {file=>${$thr}{$f}{file}, 
+            f_pdir=>"", f_size=>"", f_time=>"", 
+            t_pdir=>${$thr}{$f}{pdir},
+            t_size=>${$thr}{$f}{size},
+            t_time=>$self->fmtTime(${$thr}{$f}{time}),
+            tmdiff=>"", szdiff=>"", 
+            action=>"NA", type  =>'OLD' 
+        };
+    }
+    $s{STAT}{tmdiff}=$s{STAT}{max_time}-$s{STAT}{min_time};
+    $s{STAT}{szdiff}=$s{STAT}{max_size}-$s{STAT}{min_size};
+    $s{STAT}{max_time}=$self->fmtTime($s{STAT}{max_time});
+    $s{STAT}{min_time}=$self->fmtTime($s{STAT}{min_time});
+
+    $self->param('stat_ar', \%s);
+    $self->param('file_ar', \%r);
+
+    # $self->disp_param(\%s); 
+
+    return (\%s, \%r); 
 }
 
-sub xmove {
-    my $s = shift;
-    $s->action('move');
-    $s->xcopy(@_);  
-};
+=head2 output($sr,$rr, $out, $par)
+
+Input variables:
+
+  $sr  - statistic hash array ref from xcopy 
+  $rr  - result hash array ref containing all the files and their
+         properties.
+  $out - output file name. If specified, the log_file will not be used.
+  $par - array ref containing parameters such as 
+         log_file - log file name
+
+Variables used or routines called: 
+
+  from_dir   - get from_dir
+  to_dir     - get to_dir
+  fn_pat     - get file name pattern
+  param      - get parameters
+  action     - get action name 
+  format_number - format time or size numbers
+
+How to use:
+
+  use File::Xcopy;
+  my $fc = File::Xcopy->new;
+  my ($s, $r) = $fc->get_stat($fdir, $tdir, 'pdf$') 
+  $fc->output($s, $r); 
+
+Return: None. 
+
+
+If $out or log_file parameter is provided, then the result will be 
+outputed to it.  
+
+=cut
+
+sub output {
+    my $self = shift;
+    my ($sr, $rr, $out, $par) = @_;
+    my $fh = ""; 
+    if ($out) {
+        $fh = new IO::File "$out", O_WRONLY|O_APPEND;
+    }
+    $fh = *STDOUT if (!$fh && (!$par || ! exists ${$par}{log_file})); 
+    if (!$fh && -f ${$par}{log_file}) {
+        $fh = new IO::File "${$par}{log_file}", O_WRONLY|O_APPEND;
+    } 
+    my $fdir = $self->from_dir;
+    my $tdir = $self->to_dir;
+    my $fpat = $self->fn_pat;
+    my $act  = $self->action;
+    my $fmt  = "# %35s: %9s:%6.2f\%:%10s\n"; 
+    my $ft1  = "# %15s: max %15s min %15s diff %10s\n"; 
+    my $t = "";
+    if (exists ${$par}{log_file}) {
+        $t .= "# Xcopy Log File: ${$par}{log_file}\n" 
+    } else {
+        $t .= "# Xcopy Log Output\n" 
+    }
+    $t .= "# Date: " . localtime(time) . "\n";
+    $t .= "# Input parameters: \n";
+    $t .= "#   From dir: $fdir\n#    To  dir: $tdir\n";
+    $t .= "#   File Pat: $fpat\n#    Action : $act\n";
+    $t .= "# File statistics:           category: ";
+    $t .= "    count:    pct: total size\n";
+    my $n = ${$sr}{NEW}{cnt}+${$sr}{EX0}{cnt}+${$sr}{EX1}{cnt}
+            +${$sr}{EX2}{cnt} +${$sr}{OLD}{cnt}; 
+    my $m = ${$sr}{NEW}{szt}+${$sr}{EX0}{szt}+${$sr}{EX1}{szt}
+            +${$sr}{EX2}{szt} +${$sr}{OLD}{szt}; 
+    $t .= sprintf $fmt, ${$sr}{OK}{txt}, ${$sr}{OK}{cnt},
+          100*${$sr}{OK}{cnt}/$n, 
+          $self->format_number(${$sr}{OK}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{NO}{txt}, ${$sr}{NO}{cnt},
+          100*${$sr}{NO}{cnt}/$n, 
+          $self->format_number(${$sr}{NO}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{NEW}{txt}, ${$sr}{NEW}{cnt},
+          100*${$sr}{NEW}{cnt}/$n,
+          $self->format_number(${$sr}{NEW}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{EX0}{txt}, ${$sr}{EX0}{cnt},
+          100*${$sr}{EX0}{cnt}/$n,
+          $self->format_number(${$sr}{EX1}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{EX1}{txt}, ${$sr}{EX1}{cnt},
+          100*${$sr}{EX1}{cnt}/$n,
+          $self->format_number(${$sr}{EX1}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{EX2}{txt}, ${$sr}{EX2}{cnt},
+          100*${$sr}{EX2}{cnt}/$n,
+          $self->format_number(${$sr}{EX2}{szt}); 
+    $t .= sprintf $fmt, ${$sr}{OLD}{txt}, ${$sr}{OLD}{cnt},
+          100*${$sr}{OLD}{cnt}/$n,
+          $self->format_number(${$sr}{OLD}{szt}); 
+    $t .= "# " . ("-"x35) . ": ---------:-------:----------\n";
+    $t .= sprintf $fmt, "Totals", $n, 100, $self->format_number($m);
+    $t .= "#\n";
+    $t .= sprintf $ft1, "File size", ${$sr}{STAT}{max_size}, 
+          ${$sr}{STAT}{min_size}, 
+          $self->format_number(${$sr}{STAT}{szdiff},'time'); 
+    $t .= sprintf $ft1, "File time", ${$sr}{STAT}{max_time}, 
+          ${$sr}{STAT}{min_time}, 
+          $self->format_number(${$sr}{STAT}{tmdiff},'time'); 
+    print $fh $t; 
+    $t = "#\n";  
+    # action:f_time:t_time:tmdiff:f_size:t_size:szdiff:file_name
+    $t .= "#action| from_time|        to_time|    tmdiff|";
+    $t .= " from_size|   to_size|    szdiff|file_name";
+    print $fh "$t\n";
+    my $ft2 = "%2s|%15s|%15s|%10s|%10s|%10s|%10s|%-30s\n";
+    foreach my $f (sort keys %{$rr}) {
+        $t = sprintf $ft2, ${$rr}{$f}{action}, 
+            ${$rr}{$f}{f_time}, ${$rr}{$f}{t_time}, 
+            $self->format_number(${$rr}{$f}{tmdiff},'time'),
+            $self->format_number(${$rr}{$f}{f_size}), 
+            $self->format_number(${$rr}{$f}{t_size}), 
+            $self->format_number(${$rr}{$f}{szdiff}),
+            $f; 
+        print $fh $t;
+    }
+    undef $fh;
+}
+
+=head2 format_number($n,$t)
+
+Input variables:
+
+  $n   - a numeric number 
+  $t   - number type: 
+         size - in bytes or 
+         time - in seconds 
+
+Variables used or routines called: None.
+
+How to use:
+
+  use File::Xcopy;
+  my $fc = File::Xcopy->new;
+  # convert bytes to KB, MB or GB 
+  my $n1 = $self->format_number(10000000);       # $n1 = 9.537MB
+  # convert seconds to DDD:HH:MM:SS
+  my $n2 = $self->format_number(1000000,'time'); # $n2 = 11D13:46:40
+
+Return: formated time difference in DDDHH:MM:SS or size in GB, MB or
+KB.
+
+=cut
+
+sub format_number {
+    my $self = shift;
+    my ($n, $t) = @_;
+    # $n - number
+    # $t - type: size or time
+    #
+    return "" if $n =~ /^$/; 
+    $t = 'size' if ! $t;
+    my ($r,$s) = ("",0); 
+    my $kb = 1024;
+    my $mb = 1024*$kb;
+    my $gb = 1024*$mb; 
+    my $mi = 60;
+    my $hh = 60*$mi;
+    my $dd = 24*$hh; 
+    if ($t =~ /^s/i) {
+        return (sprintf "%5.3fGB", $n/$gb) if $n>$gb; 
+        return (sprintf "%5.3fMB", $n/$mb) if $n>$mb; 
+        return (sprintf "%5.3fKB", $n/$kb) if $n>$kb; 
+        return "$n Bytes"; 
+    } else {
+        $s = abs($n);
+        if ($s>$dd) { 
+            $r = sprintf "%5dD", $s/$dd; 
+            $s = $s%$dd;
+        }
+        if ($s>$hh) {
+            $r .= sprintf "%02d:", $s/$hh; 
+            $s = $s%$hh;
+        } 
+        if ($s>$mi) {
+            $r .= sprintf "%02d:", $s/$mi; 
+            $s = $s%$mi;
+        } 
+        $r .= sprintf "%02d", $s; 
+        $r  = "-$r" if ($n<0); 
+    }
+    return $r;
+}
 
 =head2 find_files($dir,$re)
 
@@ -513,17 +987,130 @@ sub file_stat {
     return $br; 
 }
 
-*xcp = \&xcopy;
-*xmv = \&xmove;
+
+=head3  fmtTime($ptm, $otp)
+
+Input variables:
+
+  $ptm - Perl time
+  $otp - output type: default - YYYYMMDD.hhmmss
+                       1 - YYYY/MM/DD hh:mm:ss
+                       5 - MM/DD/YYYY hh:mm:ss
+                      11 - Wed Mar 31 08:59:27 1999
+
+Variables used or routines called: None
+
+How to use:
+
+  # return current time in YYYYMMDD.hhmmss
+  my $t1 = $self->fmtTime;
+  # return current time in YYYY/MM/DD hh:mm:ss
+  my $t2 = $self->fmtTime(time,1);
+
+Return: date and time in the format specified.
+
+=cut
+
+sub fmtTime {
+    my $self = shift;
+    my ($ptm,$otp) = @_;
+    my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst,$r);
+    #
+    # Input variables:
+    #   $ptm - Perl time
+    #   $otp - output type: default - YYYYMMDD.hhmmss
+    #                       1 - YYYY/MM/DD hh:mm:ss
+    #                       5 - MM/DD/YYYY hh:mm:ss
+    #                       11 - Wed Mar 31 08:59:27 1999
+    # Local variables:
+    #   $sec  - seconds (0~59)
+    #   $min  - minutes (0~59)
+    #   $hour - hours (0~23)
+    #   $mday - day in month (1~31)
+    #   $mon  - months (0~11)
+    #   $year - year in YY
+    #   $wday - day in a week (0~6: S M T W T F S)
+    #   $yday - day in a year (1~366)
+    #   $isdst -
+    # Global variables used: None
+    # Global variables modified: None
+    # Calls-To:
+    #   &cvtYY2YYYY($year)
+    # Return: a formated time.
+    # Purpose: format perl time to readable time.
+    #
+    if (!$ptm) { $ptm = time }
+    if (!$otp) { $otp = 0 }
+    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+        localtime($ptm);
+    $year = ($year<31) ? $year+2000 : $year+1900;
+    if ($otp==1) {      # output format: YYYY/MM/DD hh:mm:ss
+        $r = sprintf "%04d/%02d/%02d %02d:%02d:%02d", $year, $mon+1,
+            $mday, $hour, $min, $sec;
+    } elsif ($otp==2) { # output format: YYYYMMDD_hhmmss
+        $r = sprintf "%04d%02d%02d_%02d%02d%02d", $year, $mon+1,
+            $mday, $hour, $min, $sec;
+    } elsif ($otp==5) { # output format: MM/DD/YYYY hh:mm:ss
+        $r = sprintf "%02d/%02d/%04d %02d:%02d:%02d", $mon+1,
+            $mday, $year, $hour, $min, $sec;
+    } elsif ($otp==11) {
+        $r = scalar localtime($ptm);
+    } else {            # output format: YYYYMMDD.hhmmss
+        $r = sprintf "%04d%02d%02d.%02d%02d%02d", $year, $mon+1,
+            $mday, $hour, $min, $sec;
+    }
+    return $r;
+}
 
 
 1;
 
 __END__
 
+=head1 CODING HISTORY 
+
+=over 4
+
+=item * Version 0.01
+
+04/15/2004 (htu) - Initial coding
+
+=item * Version 0.02
+
+04/16/2004 (htu) - laid out the coding frame
+
+=item * Version 0.06
+
+06/19/2004 (htu) - added the inline document
+
+=item * Version 0.10
+
+06/25/2004 (htu) - finished the core coding and passed first testing.
+
+=back
+
+=head1 FUTURE IMPLEMENTATION
+
+=over 4
+
+=item * add directory structure checking
+
+Check whether the from_dir and to_dir have the same directory tree.
+
+=item * add advanced parameters 
+
+Ssearch file by a certain date, etc.
+
+=back
+
 =head1 AUTHOR
 
-File::Xcopy is written by Hanming Tu I<E<lt>hanming_tu@yahoo.comE<gt>>.
+Copyright (c) 2004 Hanming Tu.  All rights reserved.
+
+This package is free software and is provided "as is" without express
+or implied warranty.  It may be used, redistributed and/or modified
+under the terms of the Perl Artistic License (see
+http://www.perl.com/perl/misc/Artistic.html)
 
 =cut
 

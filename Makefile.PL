@@ -29,10 +29,10 @@ use ExtUtils::AutoInstall (
     -version        => '0.40',
 );
 WriteMakefile(
-    DISTNAME        => 'File-Xcopy-0.06.tar.gz'      ,
+    DISTNAME        => 'File-Xcopy-0.10.tar.gz'      ,
     ABSTRACT        => 'copy files after comparing them.',
     NAME            => 'File::Xcopy'                 ,
-    PREREQ_PM       => {Test::Harness => 0.1,Test::More => 0.45,},
+    PREREQ_PM       => {Test::Harness => 0.1,IO::File => 1.08,File::Find => 0.01,File::Copy => 2.03,Test::More => 0.45,},
     AUTHOR          => 'geotiger2001@yahoo.com'      ,
-    VERSION         => 0.06                          ,
+    VERSION         => 0.10                          ,
 );
